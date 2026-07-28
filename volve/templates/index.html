@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Volve Audit Dashboard</title>
+    
+    <!-- Local assets used to support air-gapped/SSA environments -->
+    <link href="/volve/static/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="/volve/static/bootstrap-icons.css">
+    
+    <style>
+        .severity-critical { color: #dc3545; font-weight: bold; }
+        .severity-high { color: #fd7e14; font-weight: bold; }
+        .severity-medium { color: #ffc107; }
+        .severity-low { color: #0dcaf0; }
+        
+        .status-accepted { opacity: 0.6; text-decoration: line-through; }
+        .status-discarded { opacity: 0.4; filter: grayscale(100%); }
+        
+        /* Expandable Row Styling */
+        .expandable-trigger { cursor: pointer; }
+        .toggle-icon { transition: transform 0.2s ease; display: inline-block; }
+        
+        /* Rotate the chevron arrow when the row is expanded */
+        .expandable-trigger[aria-expanded="true"] .toggle-icon { transform: rotate(90deg); }
+        
+        .details-cell { padding: 0 !important; border-bottom-width: 0; }
+        .details-container { 
+            background-color: #1a1d20; 
+            border-left: 4px solid #6c757d; 
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+        }
+        .code-block { 
+            background-color: #000; 
+            color: #0f0; 
+            padding: 12px; 
+            border-radius: 6px; 
+            font-family: monospace; 
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body class="bg-dark text-light">
+    <div class="container-fluid py-4">
+        <h2 class="mb-4">🛡 Volve Audit Dashboard</h2>
+        
+        <div class="card bg-dark border-secondary">
+            <div class="card-body p-0">
+                <table class="table table-dark table-hover align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width: 40px;"></th> <!-- Column for the toggle chevron -->
+                            <th>Host</th>
+                            <th>Scope</th>
+                            <th>Severity</th>
+                            <th>Category</th>
+                            <th>Title</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for finding in findings %}
+                        
+                        <!-- MAIN ROW -->
+                        <tr id="row-{{ finding.id }}" class="status-{{ finding.status }}">
+                            <td class="text-center expandable-trigger" data-bs-toggle="collapse" data-bs-target="#details-{{ finding.id }}" aria-expanded="false">
+                                <i class="bi bi-chevron-right toggle-icon"></i>
+                            </td>
+                            <td><small class="text-muted">{{ finding.hostname }}</small></td>
+                            <td><span class="badge bg-secondary">{{ finding.scope | upper }}</span></td>
+                            <td class="severity-{{ finding.severity }}">{{ finding.severity | upper }}</td>
+                            <td>{{ finding.category }}</td>
+                            <td>
+                                {{ finding.title }}
+                                <br>
+                                <small class="text-muted">{{ finding.finding_id }}</small>
+                            </td>
+                            <td id="status-{{ finding.id }}">
+                                <span class="badge bg-secondary">{{ finding.status | upper }}</span>
+                            </td>
+                            <td>
+                                <!-- Explicitly passing 'event' prevents JS errors in modern browsers -->
+                                <button onclick="updateStatus(event, {{ finding.id }}, 'accepted')" class="btn btn-sm btn-outline-success">Accept</button>
+                                <button onclick="deleteFinding(event, {{ finding.id }})" class="btn btn-sm btn-outline-danger">Discard</button>
+                            </td>
+                        </tr>
+                        
+                        <!-- HIDDEN DETAILS ROW -->
+                        <tr id="details-row-{{ finding.id }}">
+                            <td colspan="8" class="details-cell">
+                                <div id="details-{{ finding.id }}" class="collapse">
+                                    <div class="details-container p-4 m-2 rounded">
+                                        <div class="row">
+                                            
+                                            <!-- Left Column: Details and Evidence -->
+                                            <div class="col-md-6">
+                                                <h6 class="text-info">Description</h6>
+                                                <p>{{ finding.description }}</p>
+                                                
+                                                <h6 class="text-info mt-3">Local Evidence</h6>
+                                                <p class="text-muted" style="font-family: monospace;">> {{ finding.local_evidence }}</p>
+                                            </div>
+                                            
+                                            <!-- Right Column: Remediation Plan -->
+                                            <div class="col-md-6">
+                                                <h6 class="text-warning">Remediation Plan</h6>
+                                                
+                                                <!-- Parse the JSON string from the database into a dictionary -->
+                                                {% set rem = json.loads(finding.remediation_json) %}
+                                                
+                                                <div>
+                                                    <span class="badge bg-dark border">Type: {{ rem.action_type }}</span>
+                                                    <span class="badge bg-dark border">Reboot required: {{ rem.requires_reboot }}</span>
+                                                    <span class="badge bg-dark border">Risk: {{ rem.risk_of_breakage | upper }}</span>
+                                                </div>
+                                                
+                                                <div class="code-block">
+                                                    {% for cmd in rem.commands %}
+                                                    {{ cmd }}<br>
+                                                    {% endfor %}
+                                                </div>
+                                            </div>
+                                            
+                                        </div>
+                                    </div>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap Bundle with Popper (Required for Collapse animations) -->
+    <script src="/volve/static/bootstrap.bundle.min.js"></script>
+    
+    <!-- UI Interaction Scripts -->
+    <script>
+        async function updateStatus(event, id, newStatus) {
+            // Prevent the click from also triggering the row expansion collapse
+            event.stopPropagation();
+            
+            const response = await fetch(`/volve/api/v1/findings/${id}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: newStatus })
+            });
+            
+            if (response.ok) {
+                const row = document.getElementById(`row-${id}`);
+                const statusBadge = document.getElementById(`status-${id}`);
+                
+                row.className = `status-${newStatus}`;
+                statusBadge.innerHTML = `<span class="badge bg-${newStatus === 'accepted' ? 'success' : 'danger'}">${newStatus.toUpperCase()}</span>`;
+            } else {
+                alert("Failed to update status");
+            }
+        }
+
+        async function deleteFinding(event, id) {
+            // Prevent the click from also triggering the row expansion collapse
+            event.stopPropagation();
+            
+            // Ask for user confirmation
+            if (!confirm("Are you sure you want to permanently delete this finding?")) {
+                return; // Cancel if the user aborts
+            }
+            
+            // Send delete request to backend
+            const response = await fetch(`/volve/api/v1/findings/${id}`, {
+                method: 'DELETE'
+            });
+            
+            if (response.ok) {
+                // Remove both the main row and the details row from the DOM immediately
+                document.getElementById(`row-${id}`).remove();
+                document.getElementById(`details-row-${id}`).remove();
+            } else {
+                alert("Failed to delete finding");
+            }
+        }
+    </script>
+</body>
+</html>

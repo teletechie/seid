@@ -1,0 +1,10 @@
+# --- Seid & Vardlokk (Agent Dependencies) ---
+smolagents
+duckduckgo-search  # Required for DDGS in documentation.py
+
+# --- Volve (Dashboard API Dependencies) ---
+fastapi[standard]  # Includes Pydantic and Starlette
+uvicorn[standard]  # ASGI server for FastAPI
+sqlalchemy         # Database ORM
+jinja2             # HTML Templating engine
+gunicorn           # Production WSGI/ASGI server
