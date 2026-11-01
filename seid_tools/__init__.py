@@ -11,6 +11,7 @@ from .system import (
     find_system_file,
     read_system_file,
     run_local_command,
+    set_command_timeout,
     set_interactive_mode,
     set_unsafe_mode,
 )
@@ -23,7 +24,7 @@ from .documentation import (
 
 # Configuration and state management
 from .config import get_app_config, get_model
-from .utils import load_history, save_history
+from .utils import get_history_file, load_history, save_history
 
 # The default set of tools provided to the smolagents ToolCallingAgent.
 # These functions must be decorated with @tool in their respective modules.
@@ -42,6 +43,7 @@ __all__ = [
     "default_toolbox",
     "find_system_file",
     "get_app_config",
+    "get_history_file",
     "get_model",
     "load_history",
     "read_system_file",
@@ -49,6 +51,7 @@ __all__ = [
     "save_history",
     "search_local_man_pages",
     "search_os_documentation",
+    "set_command_timeout",
     "set_interactive_mode",
     "set_unsafe_mode",
 ]

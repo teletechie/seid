@@ -13,7 +13,7 @@ It also merges 'common' settings with application-specific settings (e.g., 'seid
 import copy
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Type
 
 from smolagents import OpenAIServerModel
 
@@ -24,10 +24,12 @@ DEFAULT_CONFIG = {
     "common": {
         "model_api_base": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "model_api_key": "set_in_config_file",
-        "model_id": "gemini-2.5-flash"
+        "model_id": "gemini-2.5-flash",
+        "command_timeout": 60
     },
     "seid": {
-        "history_file": os.path.expanduser("~/.seid_history.json")
+        "history_file": os.path.expanduser("~/.seid_history.json"),
+        "max_piped_chars": 20000
     },
     "vardlokk": {
         "volve_api_url": "",
@@ -76,14 +78,23 @@ def get_app_config(app_name: str) -> Dict[str, Any]:
     merged.update(_raw_config.get(app_name, {}))
     return merged
 
-def get_model(app_name: str) -> Optional[OpenAIServerModel]:
+def get_model(
+    app_name: str,
+    model_id: Optional[str] = None,
+    model_class: Type[OpenAIServerModel] = OpenAIServerModel,
+) -> Optional[OpenAIServerModel]:
     """
     Fetches a configured model instance based on the application's merged config.
+
+    model_id optionally overrides the configured model, which lets callers try a
+    different model without editing the configuration file. model_class lets a
+    caller supply a subclass that adjusts how the provider's responses are
+    interpreted.
     """
     cfg = get_app_config(app_name)
     try:
-        return OpenAIServerModel(
-            model_id=cfg.get("model_id"),
+        return model_class(
+            model_id=model_id or cfg.get("model_id"),
             api_base=cfg.get("model_api_base"),
             api_key=cfg.get("model_api_key"),
             # Extended timeout is necessary for large context queries, log parsing,

@@ -10,6 +10,9 @@ protecting the host system from LLM hallucinations or prompt injection.
 import os
 import shlex
 import subprocess
+import sys
+from typing import Optional
+
 from smolagents import tool
 
 # Global state controlled by the main applications (Seid or Vardlokk)
@@ -20,7 +23,14 @@ INTERACTIVE_MODE = True
 MAX_CMD_OUTPUT = 8000
 MAX_FILE_OUTPUT = 6000
 
+# How long a single command may run before it is abandoned. Audit and
+# troubleshooting commands such as 'du', 'journalctl' or 'ps' routinely need
+# longer than a few seconds, so this is configurable from seid.conf.
+COMMAND_TIMEOUT = 60
+
 # We rely on systemd-run (ProtectSystem=full) to prevent filesystem mutations (rm, dd, etc.).
+# --user is essential: without it systemd-run targets the SYSTEM manager, which
+# asks polkit/GNOME for an admin password and runs the command as root.
 # However, systemd-run does NOT block IPC/Socket communications. 
 # Therefore, we explicitly block keywords that can mutate system state via sockets 
 # (like dbus or the docker daemon) when running in strict read-only mode.
@@ -41,7 +51,62 @@ def set_interactive_mode(mode: bool):
     """Toggles human-in-the-loop prompts for command execution."""
     global INTERACTIVE_MODE
     INTERACTIVE_MODE = mode
-    
+
+def set_command_timeout(seconds: int):
+    """Sets how long a single command may run before it is abandoned.
+
+    Invalid values are ignored with a warning so a typo in the configuration
+    cannot leave the agent with a zero or negative timeout.
+    """
+    global COMMAND_TIMEOUT
+    try:
+        value = int(seconds)
+    except (TypeError, ValueError):
+        print(f"⚠ Warning: invalid command_timeout {seconds!r}; keeping {COMMAND_TIMEOUT}s.")
+        return
+    if value < 1:
+        print(f"⚠ Warning: command_timeout must be at least 1 second; keeping {COMMAND_TIMEOUT}s.")
+        return
+    COMMAND_TIMEOUT = value
+
+
+def _request_approval(command: str) -> tuple[Optional[bool], str]:
+    """Asks the human to approve a command on the controlling terminal.
+
+    Returns (decision, reason). decision is True or False for an answer, or
+    None when no terminal is available; reason then explains why. Reading from
+    /dev/tty rather than stdin keeps approval working when the user pipes data
+    into Seid (stdin is already at EOF in that case).
+    """
+    prompt = f"Allow '{command}'? (y/N): "
+    answer: Optional[str] = None
+    reason = ""
+
+    try:
+        with open("/dev/tty", "r+", encoding="utf-8") as tty:
+            tty.write(prompt)
+            tty.flush()
+            answer = tty.readline()
+            if not answer:
+                answer = None
+                reason = "/dev/tty closed before an answer"
+    except (OSError, EOFError) as e:
+        reason = f"/dev/tty: {e}"
+
+    # Fall back to stdin only when it is a real terminal. Some containers and
+    # remote sessions expose stdin but not /dev/tty.
+    if answer is None and sys.stdin.isatty():
+        try:
+            answer = input(prompt)
+            reason = ""
+        except (EOFError, OSError) as e:
+            reason = f"stdin: {e}"
+
+    if answer is None:
+        return None, reason or "stdin is not a terminal"
+
+    return answer.strip().lower() == "y", ""
+
 
 @tool
 def run_local_command(command: str) -> str:
@@ -58,7 +123,7 @@ def run_local_command(command: str) -> str:
         # 2. Wrap the command in a systemd-run sandbox to protect the filesystem
         # shlex.quote ensures special characters cannot break out of the bash -c string
         safe_command = (
-            "systemd-run --pipe --wait --quiet "
+            "systemd-run --user --pipe --wait --quiet "
             "-p ProtectSystem=full "
             "-p ProtectHome=read-only "
             "-p ProtectControlGroups=yes "
@@ -70,18 +135,23 @@ def run_local_command(command: str) -> str:
         # Unsafe mode: The agent is allowed to run the raw command unconstrained
         safe_command = f"bash -c {shlex.quote(command)}"
 
-    print(f"\n[EXECUTE]: {command}")
-    
+    print(f"\n[EXECUTE]: {command}", flush=True)
+
     if INTERACTIVE_MODE:
-        allow = input("Allow? (y/N): ")
-        if allow.lower() != 'y':
+        approval, reason = _request_approval(command)
+        if approval is None:
+            return (
+                "SYSTEM BLOCK: Command not run because no terminal is available for approval "
+                f"({reason}). Re-run Seid from an interactive terminal to approve it."
+            )
+        if not approval:
             return "User aborted the command for security reasons."
     else:
         print("[AUTO-APPROVED: Running in headless mode]")
         
     try:
         # We execute the sandboxed command, never the raw LLM output
-        result = subprocess.run(safe_command, shell=True, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(safe_command, shell=True, capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
         output = result.stdout if result.stdout else result.stderr
         
         if len(output) > MAX_CMD_OUTPUT:
@@ -90,7 +160,7 @@ def run_local_command(command: str) -> str:
         return output.strip() if output else "Command ran without output."
         
     except subprocess.TimeoutExpired:
-        return "Command failed: Timeout (15s)."
+        return f"Command failed: Timeout ({COMMAND_TIMEOUT}s)."
     except Exception as e:
         return f"Command failed: {str(e)}"
 
@@ -145,7 +215,7 @@ def find_system_file(filename: str, search_dir: str = "/etc") -> str:
     cmd = f"find {shlex.quote(real_dir)} -type f -name {shlex.quote(filename)} 2>/dev/null | head -n 20"
     
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20)
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
         
         output = result.stdout.strip()
         if not output:
@@ -154,6 +224,6 @@ def find_system_file(filename: str, search_dir: str = "/etc") -> str:
         return f"Found the following files:\n{output}"
         
     except subprocess.TimeoutExpired:
-        return "Search timed out after 20 seconds."
+        return f"Search timed out after {COMMAND_TIMEOUT} seconds."
     except Exception as e:
         return f"Command failed: {str(e)}"

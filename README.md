@@ -56,6 +56,27 @@ export SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
 exec /usr/local/seid/venv/bin/python /usr/local/seid/vardlokk.py "$@"
 ```
 
+### Local model with Ollama
+Seid speaks to any OpenAI-compatible endpoint. The easiest setup is a local [Ollama](https://ollama.com) server with a model that supports native tool calling:
+
+```bash
+ollama pull granite3.3
+```
+
+Ollama serves models with a 4096-token context by default. That is too small once tool output and history are added, and the excess is truncated silently. Build a variant with a larger context instead of changing the daemon:
+
+```bash
+cat > Modelfile.granite16k <<'EOF'
+FROM granite3.3:latest
+PARAMETER num_ctx 16384
+EOF
+ollama create granite3.3-16k -f Modelfile.granite16k
+```
+
+Then set `model_id` to `granite3.3-16k:latest`, `model_api_base` to `http://localhost:11434/v1`, and `model_api_key` to any placeholder such as `not_needed`. If VRAM is tight, setting `OLLAMA_KV_CACHE_TYPE=q4_0` in the Ollama service shrinks the KV cache considerably at a small quality cost.
+
+Larger models generally reason better, but check `ollama ps` after the first request. If the `PROCESSOR` column is not 100% GPU, part of the model is running on CPU and each agent step can take tens of seconds. That is tolerable for a short Seid question, but painful for a Vardlokk audit that may run up to 40 steps.
+
 ## Configuration
 The Seid ecosystem uses a hierarchical JSON configuration. The system looks for the configuration file in two locations, allowing user-specific overrides:
 
@@ -71,21 +92,26 @@ Example seid.conf:
   "common": {
     "model_api_base": "http://localhost:11434/v1",
     "model_api_key": "not_needed",
-    "model_id": "qwen35-bigctx:latest"
+    "model_id": "granite3.3-16k:latest",
+    "command_timeout": 60
   },
   "seid": {
-    "history_file": "~/.seid_history.json"
+    "history_file": "~/.seid_history.json",
+    "max_piped_chars": 20000
   },
   "vardlokk": {
-    "volve_api_url": "[http://volve.local/volve/api/v1/audits](http://volve.local/volve/api/v1/audits)",
+    "volve_api_url": "http://localhost:8000/api/v1/audits",
     "volve_agent_token": "your_secure_token_here",
-    "volve_verify_ssl": false,
-    "model_id": "qwen35-bigctx:latest"
+    "model_id": "granite3.3-16k:latest"
   }
 }
 ```
 
-Note on Security Contexts: volve_verify_ssl defaults to true if omitted. Set this to false only if you are running in a environment using self-signed certificates.
+Note on Security Contexts: `volve_verify_ssl` defaults to true if omitted. The example above uses plain HTTP on localhost, so no certificate settings are needed. Set `volve_verify_ssl` to false only if you use HTTPS with a self-signed certificate.
+
+`command_timeout` sets the maximum number of seconds any single command the agent runs may take, and defaults to 60. Raise it if audits need slow commands such as `du` or `journalctl` over large logs. Put it in the `seid` or `vardlokk` block instead of `common` to give the two applications different limits.
+
+If you run Volve behind a reverse proxy mounted at `/volve`, use `http://your-host/volve/api/v1/audits` instead. The localhost URL above is the direct uvicorn path and is the easiest starting point.
 
 ## Usage
 ### Seid (Interactive CLI)
@@ -127,8 +153,22 @@ Run Vardlokk to investigate a specific problem (e.g., triggered by a monitoring 
 python vardlokk.py --scope investigate --context "nagios alert: CRITICAL: /home is full" --debug-payload
 ```
 
+### Volve (Dashboard API)
+Volve receives Vardlokk's reports and serves the web dashboard. Install its dependencies and start it locally:
+
+```bash
+cd volve
+pip install -r requirements.txt
+export VOLVE_API_TOKEN="your_secure_token_here"
+uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+The dashboard is then available at http://localhost:8000/. The `VOLVE_API_TOKEN` value must match `volve_agent_token` in `seid.conf`, because Vardlokk authenticates with it as a Bearer token.
+
+The example configuration above points Vardlokk at `http://localhost:8000/api/v1/audits`, which is the direct uvicorn endpoint. If you mount Volve behind a reverse proxy at `/volve`, change that to `http://your-host/volve/api/v1/audits`.
+
 ## Safety Mechanism
-By default, the toolchain blocks potentially dangerous mutating actions (e.g., rm, dnf install, systemctl stop). It will return a clear message explaining the block and instruct you to use --unsafe if you wish to proceed. When running in safe mode, commands are executed in a systemd-run container with read-only access. Even when running in --unsafe mode, interactive prompts ensure a human administrator approves every mutating command before execution.
+By default, the toolchain blocks potentially dangerous mutating actions (e.g., rm, dnf install, systemctl stop). It will return a clear message explaining the block and instruct you to use --unsafe if you wish to proceed. When running in safe mode, commands are executed as your own user through `systemd-run --user` with a read-only system view. Even when running in --unsafe mode, interactive prompts ensure a human administrator approves every mutating command before execution.
 
 ## License
 This project is licensed under the GNU Lesser General Public License v2.1 (LGPL-2.1). See the LICENSE file for details.
