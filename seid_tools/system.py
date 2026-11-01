@@ -13,9 +13,8 @@ import subprocess
 import sys
 from typing import Optional
 
-from smolagents import tool
-
-# Global state controlled by the main applications (Seid or Vardlokk)
+# Global state controlled by Seid's interactive command tool. Vardlokk uses a
+# separate, fixed read-only diagnostic toolbox and does not use this executor.
 ALLOW_UNSAFE_ACTIONS = False
 INTERACTIVE_MODE = True
 
@@ -27,13 +26,14 @@ MAX_FILE_OUTPUT = 6000
 # troubleshooting commands such as 'du', 'journalctl' or 'ps' routinely need
 # longer than a few seconds, so this is configurable from seid.conf.
 COMMAND_TIMEOUT = 60
+ATTEMPTED_COMMANDS: set[str] = set()
 
 # We rely on systemd-run (ProtectSystem=full) to prevent filesystem mutations (rm, dd, etc.).
 # --user is essential: without it systemd-run targets the SYSTEM manager, which
 # asks polkit/GNOME for an admin password and runs the command as root.
 # However, systemd-run does NOT block IPC/Socket communications. 
 # Therefore, we explicitly block keywords that can mutate system state via sockets 
-# (like dbus or the docker daemon) when running in strict read-only mode.
+# (like dbus or the docker daemon) when Seid is running in strict read-only mode.
 UNSAFE_IPC_KEYWORDS = [
     'rm ', 'chmod ', 'chown ', 'mkfs', 'dd ',
     'systemctl start', 'systemctl stop', 'systemctl restart', 
@@ -68,6 +68,11 @@ def set_command_timeout(seconds: int):
         print(f"⚠ Warning: command_timeout must be at least 1 second; keeping {COMMAND_TIMEOUT}s.")
         return
     COMMAND_TIMEOUT = value
+
+
+def reset_command_history() -> None:
+    """Start a fresh per-turn duplicate-command guard for Seid."""
+    ATTEMPTED_COMMANDS.clear()
 
 
 def _request_approval(command: str) -> tuple[Optional[bool], str]:
@@ -108,13 +113,17 @@ def _request_approval(command: str) -> tuple[Optional[bool], str]:
     return answer.strip().lower() == "y", ""
 
 
-@tool
 def run_local_command(command: str) -> str:
-    """Runs a CLI command locally on the system to inspect state, network, logs, or hardware.
+    """Runs one shell command locally; every invocation requires human approval, even in unsafe mode.
     
     Args:
         command: The bash command to run (e.g., 'ip a', 'journalctl -n 20', 'systemctl status').
     """
+    normalized_command = command.strip()
+    if normalized_command in ATTEMPTED_COMMANDS:
+        return "SYSTEM BLOCK: This exact command was already attempted during this Seid turn."
+    ATTEMPTED_COMMANDS.add(normalized_command)
+
     if not ALLOW_UNSAFE_ACTIONS:
         # 1. Block IPC/Socket mutations that bypass filesystem protections
         if any(keyword in command for keyword in UNSAFE_IPC_KEYWORDS):
@@ -152,7 +161,11 @@ def run_local_command(command: str) -> str:
     try:
         # We execute the sandboxed command, never the raw LLM output
         result = subprocess.run(safe_command, shell=True, capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
-        output = result.stdout if result.stdout else result.stderr
+        output = result.stdout
+        if result.stderr:
+            output = f"{output}\n[stderr]\n{result.stderr}" if output else result.stderr
+        if result.returncode:
+            output += f"\n[Command exited with status {result.returncode}]"
         
         if len(output) > MAX_CMD_OUTPUT:
             return output[:MAX_CMD_OUTPUT] + "\n\n... [OUTPUT TRUNCATED TO SAVE CONTEXT WINDOW]"
@@ -165,7 +178,6 @@ def run_local_command(command: str) -> str:
         return f"Command failed: {str(e)}"
 
 
-@tool
 def read_system_file(filepath: str) -> str:
     """Reads the contents of local text files to gather configuration, logs, or system state.
     
@@ -198,7 +210,6 @@ def read_system_file(filepath: str) -> str:
         return f"Error reading file: {str(e)}"
 
 
-@tool
 def find_system_file(filename: str, search_dir: str = "/etc") -> str:
     """Finds the absolute paths of files on the system using the 'find' command.
     
@@ -227,3 +238,4 @@ def find_system_file(filename: str, search_dir: str = "/etc") -> str:
         return f"Search timed out after {COMMAND_TIMEOUT} seconds."
     except Exception as e:
         return f"Command failed: {str(e)}"
+

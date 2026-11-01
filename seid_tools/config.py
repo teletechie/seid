@@ -13,9 +13,7 @@ It also merges 'common' settings with application-specific settings (e.g., 'seid
 import copy
 import json
 import os
-from typing import Any, Dict, Optional, Type
-
-from smolagents import OpenAIServerModel
+from typing import Any, Dict
 
 SYS_CONFIG_PATH = "/etc/seid/seid.conf"
 USER_CONFIG_PATH = os.path.expanduser("~/.config/seid/seid.conf")
@@ -78,30 +76,3 @@ def get_app_config(app_name: str) -> Dict[str, Any]:
     merged.update(_raw_config.get(app_name, {}))
     return merged
 
-def get_model(
-    app_name: str,
-    model_id: Optional[str] = None,
-    model_class: Type[OpenAIServerModel] = OpenAIServerModel,
-) -> Optional[OpenAIServerModel]:
-    """
-    Fetches a configured model instance based on the application's merged config.
-
-    model_id optionally overrides the configured model, which lets callers try a
-    different model without editing the configuration file. model_class lets a
-    caller supply a subclass that adjusts how the provider's responses are
-    interpreted.
-    """
-    cfg = get_app_config(app_name)
-    try:
-        return model_class(
-            model_id=model_id or cfg.get("model_id"),
-            api_base=cfg.get("model_api_base"),
-            api_key=cfg.get("model_api_key"),
-            # Extended timeout is necessary for large context queries, log parsing,
-            # or slower on-premise models running on local hardware.
-            timeout=600
-        )
-    except Exception as e:
-        print(f"❌ Error: Could not initialize model for {app_name}: {e}")
-        return None
-        
