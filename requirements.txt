@@ -1,2 +1,6 @@
-smolagents[openai]
 ddgs
+# BeeAI 0.1.79 supports this Python 3.14 environment; MCP client support will be added with the first remote connector.
+beeai-framework==0.1.79
+# Keep LiteLLM on the version that supports BeeAI's tool calls with the optional MCP proxy handler disabled.
+litellm==1.106.6
+

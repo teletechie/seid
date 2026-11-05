@@ -11,8 +11,6 @@ import subprocess
 import urllib.request
 
 from ddgs import DDGS
-from smolagents import tool
-
 # Known phrases returned by Cloudflare or Web Application Firewalls (WAF) 
 # when our scraping attempts are blocked.
 BOT_PHRASES = [
@@ -28,7 +26,6 @@ MAX_MAN_LENGTH = 9000
 MAX_DOC_LENGTH = 8000
 
 
-@tool
 def search_local_man_pages(query: str) -> str:
     """Searches the system's local manual pages to find documentation on tools, flags, and syntax.
     
@@ -64,7 +61,6 @@ def search_local_man_pages(query: str) -> str:
         return f"Error reading man pages: {str(e)}"
 
 
-@tool
 def search_os_documentation(query: str, os_name: str = "linux") -> str:
     """Searches official documentation sites prioritized by OS family, with an Arch Wiki fallback.
     
@@ -125,3 +121,4 @@ def search_os_documentation(query: str, os_name: str = "linux") -> str:
         
     except Exception as e:
         return f"Failed to read full page ({str(e)}).\n\nSearch snippet fallback:\n{snippet}"
+

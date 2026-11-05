@@ -8,18 +8,18 @@ While **Seid** serves as your primary, interactive AI assistant in the terminal,
 The name **Seid** is derived from *seiðr*, an Old Norse practice of magic involving prophecy, trance states, and the manipulation of fate. Just as seiðr practitioners navigated unseen forces to alter reality, Seid helps system administrators navigate complex technical landscapes with foresight, precision, and control.
 
 The extended toolset follows this mythological framework:
-*   **Vardlokk:** Named after the ritual song used to draw in spirits and hidden knowledge. In our ecosystem, Vardlokk runs in the background on your servers, gathering telemetry, checking package versions, and analyzing vulnerabilities.
+*   **Vardlokk:** Named after the ritual song used to draw in spirits and hidden knowledge. It investigates server alerts using bounded Linux diagnostics and reports evidence-backed findings.
 *   **Volve:** Named after the seeress who interpreted the visions. Volve acts as the central GUI/Dashboard that receives Vardlokk's findings, presenting you with the big picture and actionable remediation steps.
 
 ## Architecture Overview
 *   **Seid (Core CLI):** Your interactive, local AI sysadmin. Ask it to troubleshoot issues, read logs, or configure services directly from your terminal.
-*   **Vardlokk (Automated Agent):** A background daemon utilizing the Seid toolchain to perform scheduled, autonomous system audits (e.g., security, performance) and generate structured JSON reports.
+*   **Vardlokk (Automated Agent):** An alert-triggered Linux troubleshooter using BeeAI's requirement-driven agent and read-only diagnostic tools to generate structured reports.
 *   **Volve (Dashboard API):** The central receiver for Vardlokk reports, allowing administrators to review findings and approve remediation commands across a fleet of servers.
 
 ## Features
-- 🛡 **Safe by Default**: Runs in strictly read-only mode to prevent accidental system mutations.
-- 🔓 **Controlled Mutations**: Use the `--unsafe` flag to allow Seid or Vardlokk to execute commands that modify system state.
-- 🤖 **AI-Powered**: Leverages local LLMs (via Ollama or compatible APIs) and `smolagents` for intelligent command execution.
+- 🛡 **Read-Only Vardlokk**: Uses bounded Linux diagnostic tools and a read-only systemd service context; it has no arbitrary shell or mutation tools.
+- 🔓 **Interactive Seid**: Seid can request human approval for commands; `--unsafe` never removes the approval prompt.
+- 🤖 **Framework-Managed Agents**: Seid and Vardlokk use BeeAI's requirement-driven agent and typed tools.
 - 🔍 **Custom Tools**: Includes built-in tools for running local CLI commands, reading files, and searching OS documentation.
 - 🏢 **Enterprise Ready**: Hierarchical configuration, secure SSL handling, and structured JSON output for integrating into larger monitoring pipelines.
 
@@ -32,10 +32,18 @@ Clone the repository:
 
 Create a venv and install the dependencies:
 ```bash
-python -m venv venv
+python3 -m venv venv
 . venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+```
+The BeeAI-based Seid and Vardlokk agents require Python 3.11 or newer.
+
+To run the test suite, install the development dependencies and run pytest:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
 ```
 
 Create a script to run seid, e.g. in /usr/local/bin:
@@ -75,7 +83,7 @@ ollama create granite3.3-16k -f Modelfile.granite16k
 
 Then set `model_id` to `granite3.3-16k:latest`, `model_api_base` to `http://localhost:11434/v1`, and `model_api_key` to any placeholder such as `not_needed`. If VRAM is tight, setting `OLLAMA_KV_CACHE_TYPE=q4_0` in the Ollama service shrinks the KV cache considerably at a small quality cost.
 
-Larger models generally reason better, but check `ollama ps` after the first request. If the `PROCESSOR` column is not 100% GPU, part of the model is running on CPU and each agent step can take tens of seconds. That is tolerable for a short Seid question, but painful for a Vardlokk audit that may run up to 40 steps.
+Larger models generally reason better, but check `ollama ps` after the first request. If the `PROCESSOR` column is not 100% GPU, part of the model is running on CPU and each agent step can take tens of seconds. That is tolerable for a short Seid question. The Vardlokk prototype is capped at 16 agent iterations by default.
 
 ## Configuration
 The Seid ecosystem uses a hierarchical JSON configuration. The system looks for the configuration file in two locations, allowing user-specific overrides:
@@ -128,6 +136,12 @@ Pipe data into Seid for analysis:
 journalctl -u nginx -n 50 | python seid.py "Why is the web server crashing?"
 ```
 
+By default, Seid briefly explains why it wants to run each command and displays the command output after approval. Use `-q` or `--quiet` for the terse output mode:
+
+```bash
+python seid.py --quiet "Check disk usage on this host"
+```
+
 Allow system modifications (requires manual confirmation per command):
 
 ```bash
@@ -168,7 +182,11 @@ The dashboard is then available at http://localhost:8000/. The `VOLVE_API_TOKEN`
 The example configuration above points Vardlokk at `http://localhost:8000/api/v1/audits`, which is the direct uvicorn endpoint. If you mount Volve behind a reverse proxy at `/volve`, change that to `http://your-host/volve/api/v1/audits`.
 
 ## Safety Mechanism
-By default, the toolchain blocks potentially dangerous mutating actions (e.g., rm, dnf install, systemctl stop). It will return a clear message explaining the block and instruct you to use --unsafe if you wish to proceed. When running in safe mode, commands are executed as your own user through `systemd-run --user` with a read-only system view. Even when running in --unsafe mode, interactive prompts ensure a human administrator approves every mutating command before execution.
+Seid runs commands as the interactive user and requires human approval for each `run_local_command` invocation, including when `--unsafe` is used. Vardlokk is different: it runs unattended and is always read-only. Its BeeAI agent only receives fixed tools for host snapshots, allowlisted directory-usage scans, and read-only systemd/journal inspection. It has no arbitrary shell tool, and `--unsafe` is rejected. The systemd service should additionally use `ProtectSystem=strict`, `ProtectHome=read-only`, and `NoNewPrivileges=yes`; any future remote MCP tools must also use read-only credentials enforced by the remote service.
+
+The Vardlokk prototype requires each finding to cite evidence IDs returned by its tools. It resolves those IDs to exact diagnostic output when building the existing Volve payload. Broad/destructive remediation commands are omitted from the payload and marked for administrator review.
+
+Diagnostic output, including selected journal entries, is sent to the configured model endpoint. Use an endpoint approved for that host's data; this prototype does not provide comprehensive secret or personal-data redaction.
 
 ## License
 This project is licensed under the GNU Lesser General Public License v2.1 (LGPL-2.1). See the LICENSE file for details.
